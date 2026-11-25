@@ -25,7 +25,7 @@ from openedx_tagging.api import create_taxonomy, get_ancestor_tags, get_descenda
 from openedx_tagging.models import ObjectTag, Tag, Taxonomy
 from openedx_tagging.rules import ObjectTagPermissionItem, UserType
 
-from .data import CriterionDeletionResult, GradedObjectScore, GroupDeletionResult
+from .data import CriterionDeletionResult, EffectiveRule, GradedObjectScore, GroupDeletionResult
 from .models import (
     CompetencyCourseRun,
     CompetencyCriteriaGroup,
@@ -47,6 +47,7 @@ __all__ = [
     "CompetencyCriteriaTree",
     "CompetencyCriterionArchivedError",
     "CriterionDeletionResult",
+    "EffectiveRule",
     "GradedObjectScore",
     "GroupDeletionResult",
     "associate_competency_criterion",
@@ -59,6 +60,7 @@ __all__ = [
     "get_competency_criteria_tree",
     "get_competency_rule_profiles",
     "get_courses_with_live_criteria",
+    "get_effective_rule",
     "is_competency_taxonomy",
     "record_graded_object_statuses",
     "resolve_competency_tag",
@@ -911,17 +913,37 @@ def bulk_update_competency_criteria(
         return criteria
 
 
-def _effective_rule(criterion: CompetencyCriterion) -> tuple[str, Any]:
-    """Return (rule_type, payload) for whichever of criterion's profile or override is set."""
+def get_effective_rule(criterion: CompetencyCriterion) -> EffectiveRule:
+    """
+    Return the mastery rule ``criterion`` is graded against: its profile's rule, or its own override.
+
+    This is the rule ``record_graded_object_statuses()`` applies, so callers that show or store a
+    criterion's rule, such as analytics sinks, stay in step with grading. It reads
+    ``criterion.rule_profile`` when one is set, so load it with ``select_related("rule_profile")``
+    to avoid a query per criterion. Archived criteria and archived profiles are returned as they
+    are: this function does not decide whether a criterion is live.
+
+    UNSTABLE: see :class:`EffectiveRule`.
+    """
     if criterion.rule_profile_id is not None:
         # The oel_cbe_criterion_profile_xor_override_check constraint guarantees rule_profile is
         # set whenever rule_profile_id is; this assertion only narrows that fact for mypy.
         assert criterion.rule_profile is not None
-        return criterion.rule_profile.rule_type, criterion.rule_profile.rule_payload
+        return EffectiveRule(
+            rule_type=criterion.rule_profile.rule_type,
+            rule_payload=criterion.rule_profile.rule_payload,
+            source="profile",
+            rule_profile_id=criterion.rule_profile_id,
+        )
     # Same constraint, the other way around: rule_type_override is set whenever rule_profile_id
     # is not.
     assert criterion.rule_type_override is not None
-    return criterion.rule_type_override, criterion.rule_payload_override
+    return EffectiveRule(
+        rule_type=criterion.rule_type_override,
+        rule_payload=criterion.rule_payload_override,
+        source="override",
+        rule_profile_id=None,
+    )
 
 
 def record_graded_object_statuses(*, user_id: int, scores: Sequence[GradedObjectScore]) -> int:
@@ -974,9 +996,9 @@ def record_graded_object_statuses(*, user_id: int, scores: Sequence[GradedObject
     changed = 0
     for criterion in criteria:
         fraction = fraction_by_object_id[criterion.object_tag.object_id]
-        rule_type, payload = _effective_rule(criterion)
+        rule = get_effective_rule(criterion)
         try:
-            demonstrated = evaluate_rule(rule_type, payload, fraction)
+            demonstrated = evaluate_rule(rule.rule_type, rule.rule_payload, fraction)
         except ValidationError as exc:
             log.warning(
                 "Skipping CompetencyCriterion %s for user %s on object %s: its rule cannot be applied: %s",

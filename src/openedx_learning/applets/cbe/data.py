@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
+from typing import Any, Literal
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -68,3 +69,23 @@ class GroupDeletionResult:
     archived: bool
     cascaded_group_count: int
     cascaded_criteria_count: int
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class EffectiveRule:
+    """
+    The mastery rule a CompetencyCriterion is graded against, and where it comes from.
+
+    ``source`` is ``"profile"`` when the rule is read from the criterion's CompetencyRuleProfile, in
+    which case ``rule_profile_id`` names that profile, or ``"override"`` when the criterion carries its
+    own rule, in which case ``rule_profile_id`` is None. A profile-sourced rule changes whenever its
+    profile's rule changes, with no write to the criterion row.
+
+    UNSTABLE: the rule types and the scopes a profile may resolve from are still growing (ADR-0002),
+    so this shape may change without a deprecation cycle.
+    """
+
+    rule_type: str
+    rule_payload: Any
+    source: Literal["profile", "override"]
+    rule_profile_id: int | None
